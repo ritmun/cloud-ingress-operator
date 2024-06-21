@@ -687,14 +687,14 @@ func TestEnsurePatchableSpec(t *testing.T) {
 	}{
 		{
 			Name:                     "Should do nothing when there are no patchable spec changes",
-			IngressController:        makeIngressControllerCR("default", "external", []string{ClusterIngressFinalizer}),
+			IngressController:        makeIngressControllerCRForPatch("default", "external", []string{ClusterIngressFinalizer}),
 			DesiredIngressController: makeIngressControllerCR("default", "internal", []string{ClusterIngressFinalizer}),
 			Resp:                     reconcile.Result{},
 			ErrorExpected:            false,
 		},
 		{
 			Name:                     "Should error when failing to patch default IngressController",
-			IngressController:        makeIngressControllerCR("default", "external", []string{ClusterIngressFinalizer}),
+			IngressController:        makeIngressControllerCRForPatch("default", "external", []string{ClusterIngressFinalizer}),
 			DesiredIngressController: makeIngressControllerCR("default", "external", []string{ClusterIngressFinalizer}, testRouterSelector),
 			Resp:                     reconcile.Result{},
 			ErrorExpected:            true,
@@ -703,14 +703,14 @@ func TestEnsurePatchableSpec(t *testing.T) {
 		},
 		{
 			Name:                     "Should requeue without error when successfully patching default IngressController",
-			IngressController:        makeIngressControllerCR("default", "external", []string{ClusterIngressFinalizer}),
+			IngressController:        makeIngressControllerCRForPatch("default", "external", []string{ClusterIngressFinalizer}),
 			DesiredIngressController: makeIngressControllerCR("default", "external", []string{ClusterIngressFinalizer}, testRouterSelector),
 			Resp:                     reconcile.Result{Requeue: true},
 			ErrorExpected:            false,
 		},
 		{
 			Name:                     "Should error when failing to patch non-default IngressController",
-			IngressController:        makeIngressControllerCR("nondefault", "external", []string{ClusterIngressFinalizer}),
+			IngressController:        makeIngressControllerCRForPatch("nondefault", "external", []string{ClusterIngressFinalizer}),
 			DesiredIngressController: makeIngressControllerCR("nondefault", "external", []string{ClusterIngressFinalizer}, testRouterSelector),
 			Resp:                     reconcile.Result{},
 			ErrorExpected:            true,
@@ -719,14 +719,14 @@ func TestEnsurePatchableSpec(t *testing.T) {
 		},
 		{
 			Name:                     "Should requeue without error when patching IngressControllerCertificate of non-default IngressController",
-			IngressController:        makeIngressControllerCR("nondefault", "external", []string{ClusterIngressFinalizer}),
+			IngressController:        makeIngressControllerCRForPatch("nondefault", "external", []string{ClusterIngressFinalizer}),
 			DesiredIngressController: makeIngressControllerCR("nondefault", "external", []string{ClusterIngressFinalizer}, testDefaultCert),
 			Resp:                     reconcile.Result{Requeue: true},
 			ErrorExpected:            false,
 		},
 		{
 			Name:                     "Should requeue without error when patching IngressControllerNodePlacement of non-default IngressController",
-			IngressController:        makeIngressControllerCR("nondefault", "external", []string{ClusterIngressFinalizer}, testNodePlacement),
+			IngressController:        makeIngressControllerCRForPatch("nondefault", "external", []string{ClusterIngressFinalizer}, testNodePlacement),
 			DesiredIngressController: makeIngressControllerCR("nondefault", "external", []string{ClusterIngressFinalizer}),
 			Resp:                     reconcile.Result{Requeue: true},
 			ErrorExpected:            false,
@@ -760,6 +760,7 @@ func TestEnsureDefaultICOwnedByClusterIngressOperator(t *testing.T) {
 		ClientErr           map[string]string // used to instruct the client to generate an error on k8sclient Update, Delete or Create
 		ErrorExpected       bool
 		ErrorReason         string
+		IC                  *ingresscontroller.IngressController
 	}{
 		{
 			Name:               "It disowns the default ingress controller",
@@ -768,6 +769,8 @@ func TestEnsureDefaultICOwnedByClusterIngressOperator(t *testing.T) {
 				"Owner":                             "cluster-ingress-operator",
 				IngressControllerDeleteLBAnnotation: "true",
 			},
+
+			IC:             makeIngressControllerCRForPatch("default", "external", []string{ClusterIngressFinalizer}),
 			ClusterVersion: "4.13.0",
 			Resp:           reconcile.Result{},
 			ErrorExpected:  false,
@@ -797,13 +800,15 @@ func TestEnsureDefaultICOwnedByClusterIngressOperator(t *testing.T) {
 		defer os.Unsetenv("CLUSTER_VERSION")
 
 		os.Setenv("CLUSTER_VERSION", test.ClusterVersion)
-		ic := makeIngressControllerCR("default", "external", []string{ClusterIngressFinalizer})
+		if test.IC == nil {
+			test.IC = makeIngressControllerCR("default", "external", []string{ClusterIngressFinalizer})
+		}
 
-		testClient, testScheme := setUpTestClient([]client.Object{ic}, []runtime.Object{}, test.ClientErr["on"], test.ClientErr["type"], test.ClientErr["target"])
+		testClient, testScheme := setUpTestClient([]client.Object{test.IC}, []runtime.Object{}, test.ClientErr["on"], test.ClientErr["type"], test.ClientErr["target"])
 		r := &PublishingStrategyReconciler{Client: testClient, Scheme: testScheme}
 		result, err := r.ensureDefaultICOwnedByClusterIngressOperator(log)
 		// Reset the IC to the patched version post function call
-		_ = r.Client.Get(context.TODO(), types.NamespacedName{Name: "default", Namespace: ingressControllerNamespace}, ic)
+		_ = r.Client.Get(context.TODO(), types.NamespacedName{Name: "default", Namespace: ingressControllerNamespace}, test.IC)
 
 		if err == nil && test.ErrorExpected || err != nil && !test.ErrorExpected {
 			t.Fatalf("Test [%v] return mismatch. Expect error? %t: Return %+v", test.Name, test.ErrorExpected, err)
@@ -815,11 +820,11 @@ func TestEnsureDefaultICOwnedByClusterIngressOperator(t *testing.T) {
 			t.Fatalf("Test [%v] FAILED. Expected Response %v. Got %v", test.Name, test.Resp, result)
 		}
 
-		if test.ExpectedAnnotations != nil && !reflect.DeepEqual(ic.Annotations, test.ExpectedAnnotations) {
-			t.Fatalf("Test [%v] FAILED. Expected Response %v. Got %v", test.Name, test.ExpectedAnnotations, ic.Annotations)
+		if test.ExpectedAnnotations != nil && !reflect.DeepEqual(test.IC.Annotations, test.ExpectedAnnotations) {
+			t.Fatalf("Test [%v] FAILED. Expected Response %v. Got %v", test.Name, test.ExpectedAnnotations, test.IC.Annotations)
 		}
-		if test.ExpectedFinalizers != nil && !reflect.DeepEqual(ic.Finalizers, test.ExpectedFinalizers) {
-			t.Fatalf("Test [%v] FAILED. Expected Response %v. Got %v", test.Name, test.ExpectedFinalizers, ic.Finalizers)
+		if test.ExpectedFinalizers != nil && !reflect.DeepEqual(test.IC.Finalizers, test.ExpectedFinalizers) {
+			t.Fatalf("Test [%v] FAILED. Expected Response %v. Got %v", test.Name, test.ExpectedFinalizers, test.IC.Finalizers)
 		}
 	}
 }
@@ -954,13 +959,13 @@ func TestReconcileGCP(t *testing.T) {
 			ErrorReason:   "InternalError",
 			ClientObj: []client.Object{
 				defaultPublishingStrategy,
-				makeIngressControllerCR("default", "external", []string{ClusterIngressFinalizer}),
-				makeIngressControllerCR("unpublished-ingress", "external", []string{}),
+				makeIngressControllerCRForPatch("default", "external", []string{ClusterIngressFinalizer}),
+				makeIngressControllerCRForPatch("unpublished-ingress", "external", []string{ClusterIngressFinalizer}),
 			},
 			ClientErr:  map[string]string{"on": "Delete", "type": "InternalError"},
 			RuntimeObj: []runtime.Object{&ingresscontroller.IngressControllerList{}},
 			Mocks: func(mockclient *MockCloudClient) {
-				mockclient.EXPECT().SetDefaultAPIPublic(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
+				mockclient.EXPECT().SetDefaultAPIPublic(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 			},
 		},
 	}
@@ -1050,7 +1055,7 @@ func TestReconcileUserManagedIngressFeature(t *testing.T) {
 			Name: "Ensures API server ingress matches PS spec, and exits successfully if v>4.13 and successfully disowned ingress",
 			Resp: reconcile.Result{},
 			MakeClientObject: func(ps *cloudingressv1alpha1.PublishingStrategy) []client.Object {
-				return []client.Object{ps, makeAWSClassicIC("default", "internal", []string{ClusterIngressFinalizer})}
+				return []client.Object{ps, makeAWSClassicICForPatch("default", "internal", []string{ClusterIngressFinalizer})}
 			},
 			RuntimeObj:     []runtime.Object{&ingresscontroller.IngressControllerList{}},
 			ClusterVersion: "4.13.1",
@@ -1142,14 +1147,14 @@ func TestReconcileAWS(t *testing.T) {
 		ClientErr     map[string]string // used to instruct the client to generate an error on k8sclient Update, Delete or Create
 		ErrorExpected bool
 		ErrorReason   string
-		Mocks            func(mockclient *MockCloudClient)
+		Mocks         func(mockclient *MockCloudClient)
 	}{
 		{
 			Name:          "Should complete without error when PublishingStrategy is NotFound",
 			Resp:          reconcile.Result{},
 			ErrorExpected: false,
 			ClientErr:     map[string]string{"on": "Get", "type": "IsNotFound"},
-			Mocks: func(mockclient *MockCloudClient) {},
+			Mocks:         func(mockclient *MockCloudClient) {},
 		},
 		{
 			Name:          "Should error when failing to retrieve PublishingStrategy",
@@ -1157,7 +1162,7 @@ func TestReconcileAWS(t *testing.T) {
 			ErrorExpected: true,
 			ErrorReason:   "InternalError",
 			ClientErr:     map[string]string{"on": "Get", "type": "InternalError"},
-			Mocks: func(mockclient *MockCloudClient) {},
+			Mocks:         func(mockclient *MockCloudClient) {},
 		},
 		{
 			Name:          "Should error when failing to list IngressControllerList",
@@ -1166,7 +1171,7 @@ func TestReconcileAWS(t *testing.T) {
 			ErrorReason:   "InternalError",
 			ClientObj:     []client.Object{defaultPublishingStrategy},
 			ClientErr:     map[string]string{"on": "List", "type": "InternalError"},
-			Mocks: func(mockclient *MockCloudClient) {},
+			Mocks:         func(mockclient *MockCloudClient) {},
 		},
 		{
 			Name:          "Should error when failing to retrieve ingresscontroller",
@@ -1176,7 +1181,7 @@ func TestReconcileAWS(t *testing.T) {
 			ClientObj:     []client.Object{defaultPublishingStrategy, &ingresscontroller.IngressController{}},
 			ClientErr:     map[string]string{"on": "Get", "type": "InternalError"},
 			RuntimeObj:    []runtime.Object{&ingresscontroller.IngressControllerList{}},
-			Mocks: func(mockclient *MockCloudClient) {},
+			Mocks:         func(mockclient *MockCloudClient) {},
 		},
 		{
 			Name:          "Should error when failing to create missing ingresscontroller",
@@ -1186,7 +1191,7 @@ func TestReconcileAWS(t *testing.T) {
 			ClientObj:     []client.Object{defaultPublishingStrategy, &ingresscontroller.IngressController{}},
 			ClientErr:     map[string]string{"on": "Create", "type": "InternalError"},
 			RuntimeObj:    []runtime.Object{&ingresscontroller.IngressControllerList{}},
-			Mocks: func(mockclient *MockCloudClient) {},
+			Mocks:         func(mockclient *MockCloudClient) {},
 		},
 		{
 			Name:          "Should requeue when succesfully creating missing ingresscontroller",
@@ -1194,7 +1199,7 @@ func TestReconcileAWS(t *testing.T) {
 			ErrorExpected: false,
 			ClientObj:     []client.Object{defaultPublishingStrategy, &ingresscontroller.IngressController{}},
 			RuntimeObj:    []runtime.Object{&ingresscontroller.IngressControllerList{}},
-			Mocks: func(mockclient *MockCloudClient) {},
+			Mocks:         func(mockclient *MockCloudClient) {},
 		},
 		{
 			Name:          "Should requeue with delay when ingresscontroller is marked as deleted",
@@ -1202,7 +1207,7 @@ func TestReconcileAWS(t *testing.T) {
 			ErrorExpected: false,
 			ClientObj:     []client.Object{defaultPublishingStrategy, makeAWSClassicIC("default", "external", []string{ClusterIngressFinalizer}, metav1.Now())},
 			RuntimeObj:    []runtime.Object{&ingresscontroller.IngressControllerList{}},
-			Mocks: func(mockclient *MockCloudClient) {},
+			Mocks:         func(mockclient *MockCloudClient) {},
 		},
 		{
 			Name:          "Should requeue with error when failing to ensure static specs on ingresscontroller",
@@ -1212,7 +1217,7 @@ func TestReconcileAWS(t *testing.T) {
 			ClientObj:     []client.Object{defaultPublishingStrategy, makeAWSClassicIC("default", "internal", []string{ClusterIngressFinalizer})},
 			ClientErr:     map[string]string{"on": "Update", "type": "InternalError"},
 			RuntimeObj:    []runtime.Object{&ingresscontroller.IngressControllerList{}},
-			Mocks: func(mockclient *MockCloudClient) {},
+			Mocks:         func(mockclient *MockCloudClient) {},
 		},
 		{
 			Name:          "Should error when failing to ensure patchable specs on ingresscontroller",
@@ -1225,7 +1230,7 @@ func TestReconcileAWS(t *testing.T) {
 			},
 			ClientErr:  map[string]string{"on": "Patch", "type": "InternalError"},
 			RuntimeObj: []runtime.Object{&ingresscontroller.IngressControllerList{}},
-			Mocks: func(mockclient *MockCloudClient) {},
+			Mocks:      func(mockclient *MockCloudClient) {},
 		},
 		{
 			Name:          "Should error when failing delete punblished ingresscontroller",
@@ -1234,13 +1239,13 @@ func TestReconcileAWS(t *testing.T) {
 			ErrorReason:   "InternalError",
 			ClientObj: []client.Object{
 				defaultPublishingStrategy,
-				makeAWSClassicIC("default", "external", []string{ClusterIngressFinalizer}),
-				makeAWSClassicIC("unpublished-ingress", "external", []string{}),
+				makeAWSClassicICForPatch("default", "external", []string{ClusterIngressFinalizer}),
+				makeAWSClassicICForPatch("unpublished-ingress", "external", []string{}),
 			},
 			ClientErr:  map[string]string{"on": "Delete", "type": "InternalError"},
 			RuntimeObj: []runtime.Object{&ingresscontroller.IngressControllerList{}},
 			Mocks: func(mockclient *MockCloudClient) {
-				mockclient.EXPECT().SetDefaultAPIPublic(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
+				mockclient.EXPECT().SetDefaultAPIPublic(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 			},
 		},
 		{
@@ -1249,7 +1254,7 @@ func TestReconcileAWS(t *testing.T) {
 			ErrorExpected: false,
 			ClientObj:     []client.Object{defaultPublishingStrategy, makeAWSNLBIC("default", "external", []string{ClusterIngressFinalizer}, metav1.Now())},
 			RuntimeObj:    []runtime.Object{&ingresscontroller.IngressControllerList{}},
-			Mocks: func(mockclient *MockCloudClient) {},
+			Mocks:         func(mockclient *MockCloudClient) {},
 		},
 	}
 
@@ -1328,7 +1333,7 @@ func TestReconcileAWSNLB(t *testing.T) {
 			ErrorExpected: false,
 			ClientObj:     []client.Object{defaultPublishingStrategy, makeAWSNLBIC("default", "external", []string{ClusterIngressFinalizer}, metav1.Now())},
 			RuntimeObj:    []runtime.Object{&ingresscontroller.IngressControllerList{}},
-			Mocks: func(mockclient *MockCloudClient) {},
+			Mocks:         func(mockclient *MockCloudClient) {},
 		},
 		{
 			Name:          "Should requeue with error when failing to ensure static specs on ingresscontroller",
@@ -1338,7 +1343,7 @@ func TestReconcileAWSNLB(t *testing.T) {
 			ClientObj:     []client.Object{defaultPublishingStrategy, makeAWSNLBIC("default", "internal", []string{ClusterIngressFinalizer})},
 			ClientErr:     map[string]string{"on": "Update", "type": "InternalError"},
 			RuntimeObj:    []runtime.Object{&ingresscontroller.IngressControllerList{}},
-			Mocks: func(mockclient *MockCloudClient) {},
+			Mocks:         func(mockclient *MockCloudClient) {},
 		},
 		{
 			Name:          "Should error when failing to ensure patchable specs on ingresscontroller",
@@ -1351,7 +1356,7 @@ func TestReconcileAWSNLB(t *testing.T) {
 			},
 			ClientErr:  map[string]string{"on": "Patch", "type": "InternalError"},
 			RuntimeObj: []runtime.Object{&ingresscontroller.IngressControllerList{}},
-			Mocks: func(mockclient *MockCloudClient) {},
+			Mocks:      func(mockclient *MockCloudClient) {},
 		},
 		{
 			Name:          "Should error when failing to delete published ingresscontroller",
@@ -1360,13 +1365,13 @@ func TestReconcileAWSNLB(t *testing.T) {
 			ErrorReason:   "InternalError",
 			ClientObj: []client.Object{
 				defaultPublishingStrategy,
-				makeAWSNLBIC("default", "external", []string{ClusterIngressFinalizer}),
-				makeAWSNLBIC("unpublished-ingress", "external", []string{}),
+				makeAWSNLBICForPatch("default", "external", []string{ClusterIngressFinalizer}),
+				makeAWSNLBICForPatch("unpublished-ingress", "external", []string{}),
 			},
 			ClientErr:  map[string]string{"on": "Delete", "type": "InternalError"},
 			RuntimeObj: []runtime.Object{&ingresscontroller.IngressControllerList{}},
 			Mocks: func(mockclient *MockCloudClient) {
-				mockclient.EXPECT().SetDefaultAPIPublic(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
+				mockclient.EXPECT().SetDefaultAPIPublic(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 			},
 		},
 		{
@@ -1375,7 +1380,7 @@ func TestReconcileAWSNLB(t *testing.T) {
 			ErrorExpected: false,
 			ClientObj:     []client.Object{defaultPublishingStrategy, makeAWSClassicIC("default", "external", []string{ClusterIngressFinalizer}, metav1.Now())},
 			RuntimeObj:    []runtime.Object{&ingresscontroller.IngressControllerList{}},
-			Mocks: func(mockclient *MockCloudClient) {},
+			Mocks:         func(mockclient *MockCloudClient) {},
 		},
 	}
 
@@ -1416,6 +1421,20 @@ func TestReconcileAWSNLB(t *testing.T) {
 	}
 }
 
+// Make IC without deletion timestamp. Deletion timestamp is not allowed in patches.
+func makeAWSClassicICForPatch(name, lbScope string, finalizers []string, overrides ...interface{}) *ingresscontroller.IngressController {
+	ic := makeIngressControllerCRForPatch(name, lbScope, finalizers, overrides...)
+
+	ic.Spec.EndpointPublishingStrategy.LoadBalancer.ProviderParameters = &ingresscontroller.ProviderLoadBalancerParameters{
+		Type: ingresscontroller.AWSLoadBalancerProvider,
+		AWS: &ingresscontroller.AWSLoadBalancerParameters{
+			Type: ingresscontroller.AWSClassicLoadBalancer,
+		},
+	}
+
+	return ic
+}
+
 func makeAWSClassicIC(name, lbScope string, finalizers []string, overrides ...interface{}) *ingresscontroller.IngressController {
 	ic := makeIngressControllerCR(name, lbScope, finalizers, overrides...)
 
@@ -1431,6 +1450,20 @@ func makeAWSClassicIC(name, lbScope string, finalizers []string, overrides ...in
 
 func makeAWSNLBIC(name, lbScope string, finalizers []string, overrides ...interface{}) *ingresscontroller.IngressController {
 	ic := makeIngressControllerCR(name, lbScope, finalizers, overrides...)
+
+	ic.Spec.EndpointPublishingStrategy.LoadBalancer.ProviderParameters = &ingresscontroller.ProviderLoadBalancerParameters{
+		Type: ingresscontroller.AWSLoadBalancerProvider,
+		AWS: &ingresscontroller.AWSLoadBalancerParameters{
+			Type: ingresscontroller.AWSNetworkLoadBalancer,
+		},
+	}
+
+	return ic
+}
+
+// Make IC without deletion timestamp. Deletion timestamp is not allowed in patches.
+func makeAWSNLBICForPatch(name, lbScope string, finalizers []string, overrides ...interface{}) *ingresscontroller.IngressController {
+	ic := makeIngressControllerCRForPatch(name, lbScope, finalizers, overrides...)
 
 	ic.Spec.EndpointPublishingStrategy.LoadBalancer.ProviderParameters = &ingresscontroller.ProviderLoadBalancerParameters{
 		Type: ingresscontroller.AWSLoadBalancerProvider,
@@ -1493,6 +1526,69 @@ func makeIngressControllerCR(name, lbScope string, finalizers []string, override
 			},
 			Finalizers:        finalizers,
 			DeletionTimestamp: &timestamp,
+		},
+		Spec: ingresscontroller.IngressControllerSpec{
+			DefaultCertificate: &defaultCert,
+
+			Domain: "my.unit.test",
+			EndpointPublishingStrategy: &ingresscontroller.EndpointPublishingStrategy{
+				Type: ingresscontroller.LoadBalancerServiceStrategyType,
+				LoadBalancer: &ingresscontroller.LoadBalancerStrategy{
+					Scope: scope,
+				},
+			},
+			NodePlacement: &nodeSelector,
+			RouteSelector: &routerSelector,
+		},
+	}
+}
+
+// utils
+// makeIngressControllerCR creates an IngressControllerCR without deletion timestamp for patch
+func makeIngressControllerCRForPatch(name, lbScope string, finalizers []string, overrides ...interface{}) *ingresscontroller.IngressController {
+	var scope ingresscontroller.LoadBalancerScope
+
+	routerSelector := metav1.LabelSelector{}
+	defaultCert := corev1.LocalObjectReference{Name: "test-cert-bundle-secret"}
+	nodeSelector := ingresscontroller.NodePlacement{
+		NodeSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{infraNodeLabelKey: ""},
+		},
+		Tolerations: []corev1.Toleration{
+			{
+				Key:      infraNodeLabelKey,
+				Effect:   corev1.TaintEffectNoSchedule,
+				Operator: corev1.TolerationOpExists,
+			},
+		},
+	}
+
+	switch lbScope {
+	case "internal":
+		scope = ingresscontroller.InternalLoadBalancer
+	default:
+		scope = ingresscontroller.ExternalLoadBalancer
+	}
+
+	for _, override := range overrides {
+		switch v := override.(type) {
+		case corev1.LocalObjectReference:
+			defaultCert = v
+		case metav1.LabelSelector:
+			routerSelector = v
+		case ingresscontroller.NodePlacement:
+			nodeSelector = v
+		}
+	}
+
+	return &ingresscontroller.IngressController{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "openshift-ingress-operator",
+			Annotations: map[string]string{
+				"Owner": "cloud-ingress-operator",
+			},
+			Finalizers: finalizers,
 		},
 		Spec: ingresscontroller.IngressControllerSpec{
 			DefaultCertificate: &defaultCert,
